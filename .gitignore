@@ -1,0 +1,202 @@
+# ======================================
+# Environment Variables (최우선)
+# ======================================
+.env
+.env.local
+.env.*.local
+*.env
+
+# ======================================
+# Python / FastAPI (pulse_python)
+# ======================================
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyCharm
+.idea/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# ======================================
+# Java / Spring Boot (pulse_spring)
+# ======================================
+# Compiled class files
+*.class
+
+# Maven
+target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.jar
+
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+# IntelliJ IDEA
+.idea/
+*.iws
+*.iml
+*.ipr
+out/
+
+# Eclipse
+.classpath
+.project
+.settings/
+bin/
+
+# Spring Boot
+spring-boot-*.log
+
+# ======================================
+# Node.js / React (pulse_FE)
+# ======================================
+# Dependencies
+node_modules/
+jspm_packages/
+
+# Production build
+/build
+/dist
+
+# Testing
+coverage/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Package manager files
+.pnp
+.pnp.js
+.yarn/install-state.gz
+
+# Misc
+.DS_Store
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# ======================================
+# IDE / Editor
+# ======================================
+# VS Code
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# JetBrains IDEs
+.idea/
+*.iml
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# ======================================
+# OS Files
+# ======================================
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Linux
+*~
+.directory
+
+# ======================================
+# Logs and Databases
+# ======================================
+*.log
+*.sql
+*.sqlite
+*.db
+
+# ======================================
+# Temporary files
+# ======================================
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# ======================================
+# Media files (optional - 필요시 주석 해제)
+# ======================================
+# *.mp4
+# *.avi
+# *.mov
+
+# ======================================
+# MongoDB dumps
+# ======================================
+dump/
+
+# ======================================
+# API Keys & Credentials
+# ======================================
+*.pem
+*.key
+*.cert
+credentials.json
+secrets.json
