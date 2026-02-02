@@ -1,0 +1,9 @@
+[submodule "pulse_FE"]
+	path = pulse_FE
+	url = https://github.com/SKUnohtaekyung/pulse_FE
+[submodule "pulse_python"]
+	path = pulse_python
+	url = https://github.com/YJlang/pulse_python
+[submodule "pulse_spring"]
+	path = pulse_spring
+	url = https://github.com/YJlang/pulse_spring
