@@ -1,13 +1,13 @@
 package com.example.pulse_spring.service;
 
 import com.example.pulse_spring.util.TtlCache;
+import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestTemplate;
@@ -28,6 +28,7 @@ import java.util.Map;
  * ⚠️ safetydata는 호출 서버의 공인 IP를 콘솔에 등록해야 한다(미등록 시 resultCode=32).
  */
 @Service
+@RequiredArgsConstructor
 public class WeatherService {
     private static final Logger log = LoggerFactory.getLogger(WeatherService.class);
     private static final ZoneId KST = ZoneId.of("Asia/Seoul");
@@ -44,7 +45,8 @@ public class WeatherService {
             Map.entry("경상남", "48"), Map.entry("제주", "50")
     );
 
-    private final RestTemplate restTemplate = createRestTemplate();
+    // 타임아웃은 config/RestTemplateConfig에서 중앙 관리한다.
+    private final RestTemplate restTemplate;
     // 전국 응답을 30분 캐시(데이터는 시간 단위 갱신) → 가게가 많아도 호출 1회로 공유(일 1000건 제한 보호)
     private final TtlCache<List<Map<String, Object>>> bodyCache = new TtlCache<>(30 * 60 * 1000L);
 
@@ -56,13 +58,6 @@ public class WeatherService {
 
     @Value("${weather.service-key:}")
     private String serviceKey;
-
-    private static RestTemplate createRestTemplate() {
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(3000);
-        factory.setReadTimeout(6000);
-        return new RestTemplate(factory);
-    }
 
     /** 가게 주소 기준 weatherType(예: clear_day, rain) 반환. 사용 불가 시 null. */
     public String resolveWeatherType(String address, long nowMs) {

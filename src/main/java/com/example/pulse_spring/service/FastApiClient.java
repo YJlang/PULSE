@@ -2,10 +2,12 @@ package com.example.pulse_spring.service;
 
 import com.example.pulse_spring.dto.*;
 import lombok.RequiredArgsConstructor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.*;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestTemplate;
@@ -19,19 +21,15 @@ import java.util.Map;
 @Service
 @RequiredArgsConstructor
 public class FastApiClient {
-    // FastAPI의 LLM 호출(리뷰 답글/상권 액션)은 수십 초가 걸릴 수 있어 read 타임아웃을 넉넉히 둔다.
-    // 무한 행(hang)은 막되, 정상 LLM 지연은 허용한다.
-    private final RestTemplate restTemplate = createRestTemplate(3000, 60000);
+    private static final Logger log = LoggerFactory.getLogger(FastApiClient.class);
+
+    // FastAPI의 LLM 호출(리뷰 답글/상권 액션)은 수십 초가 걸릴 수 있어 read 타임아웃을 넉넉히 둔 전용 빈을 사용한다.
+    // 무한 행(hang)은 막되, 정상 LLM 지연은 허용한다. (config/RestTemplateConfig 참고)
+    @Qualifier("fastApiRestTemplate")
+    private final RestTemplate restTemplate;
 
     @Value("${fastapi.base-url}")
     private String fastApiBaseUrl;
-
-    private static RestTemplate createRestTemplate(int connectTimeoutMs, int readTimeoutMs) {
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(connectTimeoutMs);
-        factory.setReadTimeout(readTimeoutMs);
-        return new RestTemplate(factory);
-    }
 
     public String sendAnalysisRequest(Long shopId, String shopName, String address, String keyword) {
         Map<String, Object> request = new HashMap<>();
@@ -49,7 +47,7 @@ public class FastApiClient {
                 throw new IllegalStateException("FastAPI가 task id를 반환하지 않았습니다.");
             }
 
-            System.out.println("✅ FastAPI 분석 요청 전송 완료: " + shopName + " / taskId=" + response.getTaskId());
+            log.info("FastAPI 분석 요청 전송 완료: shopName={}, taskId={}", shopName, response.getTaskId());
             return response.getTaskId();
         } catch (Exception e) {
             throw new IllegalStateException("AI 분석 요청에 실패했습니다: " + e.getMessage(), e);

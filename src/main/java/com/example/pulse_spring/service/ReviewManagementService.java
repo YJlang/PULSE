@@ -25,7 +25,7 @@ public class ReviewManagementService {
     private final ReviewReplySettingsRepository reviewReplySettingsRepository;
     private final ReplyTemplateRepository replyTemplateRepository;
     private final FastApiClient fastApiClient;
-    private ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper;
 
     @Transactional(readOnly = true)
     public ReviewManagementContextResponse getContext(String userEmail) {

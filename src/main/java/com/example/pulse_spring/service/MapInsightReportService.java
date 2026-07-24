@@ -8,7 +8,6 @@ import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestTemplate;
@@ -43,18 +42,11 @@ public class MapInsightReportService {
             "HP8", new AnchorConfig(1, "병원")
     );
 
-    // Kakao Local 호출은 빠른(<1s) 응답이 정상이므로 짧은 타임아웃으로 스레드 점유를 막는다.
-    private final RestTemplate restTemplate = createRestTemplate(3000, 6000);
+    // Kakao Local 호출용 RestTemplate. 타임아웃은 config/RestTemplateConfig에서 중앙 관리한다.
+    private final RestTemplate restTemplate;
 
     @Value("${kakao.rest-api-key:}")
     private String restApiKey;
-
-    private static RestTemplate createRestTemplate(int connectTimeoutMs, int readTimeoutMs) {
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(connectTimeoutMs);
-        factory.setReadTimeout(readTimeoutMs);
-        return new RestTemplate(factory);
-    }
 
     public Map<String, Object> buildReport(MapInsightReportRequest request) {
         if (!StringUtils.hasText(restApiKey)) {

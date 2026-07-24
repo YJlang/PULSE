@@ -8,8 +8,12 @@ spring:
     driver-class-name: ${SPRING_DATASOURCE_DRIVER_CLASS_NAME:com.mysql.cj.jdbc.Driver}
   jpa:
     hibernate:
-      ddl-auto: ${SPRING_JPA_DDL_AUTO:create}
-    show-sql: ${SPRING_JPA_SHOW_SQL:true}
+      ddl-auto: ${SPRING_JPA_DDL_AUTO:update}
+    show-sql: ${SPRING_JPA_SHOW_SQL:false}
+    open-in-view: false
+    properties:
+      hibernate:
+        default_batch_fetch_size: 100
   session:
     jdbc:
       initialize-schema: always
