@@ -400,20 +400,6 @@ JSON 없이 텍스트만 출력하세요.
         except Exception as e:
             logger.error(f"❌ Error generating persona for topic {topic_id}: {e}")
             return self._build_local_persona_response(topic_id, keywords, reviews, percentage)
-            # Fallback 데이터 반환
-            return {
-                "nickname": f"고객 그룹 {topic_id}",
-                "tags": ["분석 실패"],
-                "summary": "데이터를 분석하는 중 오류가 발생했습니다.",
-                "journey": {
-                    "explore": {"label": "탐색", "action": "-", "thought": "-", "type": "neutral", "touchpoint": "-", "opportunity": "-"},
-                    "visit": {"label": "방문", "action": "-", "thought": "-", "type": "neutral", "touchpoint": "-", "opportunity": "-"},
-                    "eat": {"label": "식사", "action": "-", "thought": "-", "type": "neutral", "touchpoint": "-", "opportunity": "-"},
-                    "share": {"label": "공유", "action": "-", "thought": "-", "type": "neutral", "touchpoint": "-", "opportunity": "-"}
-                },
-                "overall_comment": "데이터 분석 중 오류가 발생하여 총평을 생성할 수 없습니다.",
-                "action_recommendation": "다시 분석을 시도해주세요."
-            }
 
     def generate_full_report(self, store_name: str, analysis_result: Dict[str, Any]) -> Dict[str, Any]:
         """

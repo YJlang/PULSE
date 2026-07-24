@@ -40,6 +40,9 @@ class MongoService:
         self.raw_task_collection.create_index("task_id", unique=True)
         self.raw_snapshot_collection.create_index("store_key", unique=True)
         self.raw_snapshot_collection.create_index("updated_at")
+        # get_latest_reviews()의 폴백 조회 패턴(store_name으로 필터 후 updated_at/최신순 정렬)에 대응.
+        self.raw_snapshot_collection.create_index([("store_name", 1), ("updated_at", -1)])
+        self.raw_task_collection.create_index([("store_name", 1), ("_id", -1)])
         
         self.initialized = True
         logger.info("✅ [MongoService] Connected to MongoDB (pulse_db.analysis_results)")

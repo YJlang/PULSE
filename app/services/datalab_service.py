@@ -46,6 +46,8 @@ class DataLabService:
     def __init__(self) -> None:
         self.client_id = os.getenv("NAVER_CLIENT_ID")
         self.client_secret = os.getenv("NAVER_CLIENT_SECRET")
+        # 요청마다 새 커넥션을 맺지 않도록 세션을 재사용한다.
+        self._session = requests.Session()
 
     @property
     def enabled(self) -> bool:
@@ -97,7 +99,7 @@ class DataLabService:
             "keywordGroups": [{"groupName": kw, "keywords": [kw]} for kw in cleaned],
         }
 
-        response = requests.post(DATALAB_URL, headers=self._headers(), json=body, timeout=15)
+        response = self._session.post(DATALAB_URL, headers=self._headers(), json=body, timeout=15)
         response.raise_for_status()
         results = response.json().get("results", [])
 

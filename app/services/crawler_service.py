@@ -32,16 +32,12 @@ class CrawlerService:
     # getVisitorReviews 는 size 상한 50, page 파라미터 무시 → 한 가게당 최신 50개가 수집 한계.
     NAVER_REVIEW_MAX_PAGE_SIZE = 50
 
-    @staticmethod
-    def _normalize_search_text(text: str) -> str:
-        cleaned = re.sub(r"\([^)]*\)", " ", text or "")
-        cleaned = re.sub(r"\b\d+\s*번길\b", " ", cleaned)
-        cleaned = re.sub(r"[^\w\s가-힣-]", " ", cleaned)
-        cleaned = re.sub(r"\s+", " ", cleaned)
-        return cleaned.strip()
+    def __init__(self) -> None:
+        # 네이버 검색/리뷰 API 호출마다 TCP 커넥션을 새로 맺지 않도록 세션을 재사용한다.
+        self._session = requests.Session()
 
-    # Keep a UTF-8-safe normalizer here because the legacy regex above can be
-    # corrupted on Windows terminals and strip Hangul from search queries.
+    # UTF-8-safe normalizer: 정규식이 Windows 터미널에서 깨져 한글이
+    # 잘려나가는 것을 막기 위해 명시적인 문자 클래스를 사용한다.
     @staticmethod
     def _normalize_search_text(text: str) -> str:
         cleaned = re.sub(r"\([^)]*\)", " ", text or "")
@@ -332,7 +328,7 @@ class CrawlerService:
         """pcmap 검색 결과(SSR)에서 가게 후보를 추출하고 점수 매칭으로 businessId 를 고른다."""
         query = self._build_search_query(store_name, address)
         try:
-            response = requests.get(
+            response = self._session.get(
                 self.NAVER_PCMAP_LIST_URL,
                 params={"query": query},
                 headers={
@@ -425,7 +421,7 @@ class CrawlerService:
             }
         ]
         try:
-            response = requests.post(
+            response = self._session.post(
                 self.NAVER_GRAPHQL_URL,
                 json=payload,
                 headers={

@@ -42,6 +42,11 @@ task_lock = threading.Lock()
 promotion_tasks: dict[str, dict[str, Any]] = {}
 promotion_task_lock = threading.Lock()
 
+# 완료/실패한 지 오래된 태스크를 정리하기 위한 TTL. 진행 중인 태스크는 대상에서 제외한다.
+TASK_TTL = timedelta(hours=1)
+_ANALYSIS_TERMINAL_STATUSES = {"completed", "failed"}
+_PROMOTION_TERMINAL_STATUSES = {"complete", "error"}
+
 crawler_service = CrawlerService()
 analysis_service = AnalysisService()
 llm_service = LLMService()
@@ -69,7 +74,26 @@ def _parse_iso_datetime(value: str | None) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _cleanup_expired_tasks(
+    store: dict[str, dict[str, Any]],
+    lock: threading.Lock,
+    terminal_statuses: set[str],
+) -> None:
+    """완료/실패한 지 TASK_TTL이 지난 태스크를 정리한다. 진행 중인 태스크는 절대 건드리지 않는다."""
+    cutoff = datetime.now(timezone.utc) - TASK_TTL
+    with lock:
+        expired_ids = [
+            task_id
+            for task_id, task in store.items()
+            if task.get("status") in terminal_statuses
+            and (_parse_iso_datetime(task.get("updated_at")) or datetime.now(timezone.utc)) < cutoff
+        ]
+        for task_id in expired_ids:
+            del store[task_id]
+
+
 def _create_task(task_id: str) -> None:
+    _cleanup_expired_tasks(tasks, task_lock, _ANALYSIS_TERMINAL_STATUSES)
     with task_lock:
         tasks[task_id] = {
             "status": "pending",
@@ -97,6 +121,7 @@ def _get_task(task_id: str) -> dict[str, Any] | None:
 
 
 def _create_promotion_task(task_id: str) -> None:
+    _cleanup_expired_tasks(promotion_tasks, promotion_task_lock, _PROMOTION_TERMINAL_STATUSES)
     with promotion_task_lock:
         promotion_tasks[task_id] = {
             "status": "processing",
@@ -129,7 +154,7 @@ async def _ensure_review_snapshot(
     refresh_if_needed: bool,
     target_total_reviews: int,
 ):
-    snapshot = mongo_service.get_latest_reviews(store_name, address)
+    snapshot = await asyncio.to_thread(mongo_service.get_latest_reviews, store_name, address)
     if not refresh_if_needed:
         return snapshot
 
@@ -153,13 +178,14 @@ async def _ensure_review_snapshot(
     )
     reviews = await crawler_service.collect_all_reviews(store_name, address)
     if reviews:
-        mongo_service.save_raw_reviews(
+        await asyncio.to_thread(
+            mongo_service.save_raw_reviews,
             f"refresh-{uuid.uuid4()}",
             store_name,
             address,
             reviews,
         )
-        return mongo_service.get_latest_reviews(store_name, address)
+        return await asyncio.to_thread(mongo_service.get_latest_reviews, store_name, address)
 
     return snapshot
 
@@ -348,16 +374,22 @@ async def get_task_result(task_id: str):
     return task["result"]
 
 
+def _fetch_latest_analysis_document() -> dict[str, Any] | None:
+    mongo_service.initialize()
+    doc = mongo_service.db["analysis_results"].find_one(sort=[("_id", -1)])
+    if doc:
+        doc.pop("_id", None)
+        doc.pop("task_id", None)
+    return doc
+
+
 @router.get("/analysis/latest")
 async def get_latest_result():
     try:
-        mongo_service.initialize()
-        doc = mongo_service.db["analysis_results"].find_one(sort=[("_id", -1)])
+        doc = await asyncio.to_thread(_fetch_latest_analysis_document)
         if not doc:
             raise HTTPException(status_code=404, detail="분석 결과가 없습니다.")
 
-        doc.pop("_id", None)
-        doc.pop("task_id", None)
         logger.info("Latest analysis result returned: %s", doc.get("store_name", "N/A"))
         return doc
     except HTTPException:
@@ -407,7 +439,8 @@ async def get_latest_reviews(
 @router.post("/reviews/replies/generate", response_model=GenerateReviewRepliesResponse)
 async def generate_review_replies(req: GenerateReviewRepliesRequest):
     try:
-        replies = llm_service.generate_review_replies(
+        replies = await asyncio.to_thread(
+            llm_service.generate_review_replies,
             shop_name=req.shop_name,
             reviews=[review.model_dump() for review in req.reviews],
             settings=req.settings.model_dump(),
@@ -454,7 +487,7 @@ async def get_search_signal(req: SearchSignalRequest):
 @router.post("/map-insight/actions", response_model=MapInsightActionsResponse)
 async def generate_map_insight_actions(req: MapInsightActionsRequest):
     try:
-        actions = llm_service.generate_map_insight_actions(req.model_dump())
+        actions = await asyncio.to_thread(llm_service.generate_map_insight_actions, req.model_dump())
         return MapInsightActionsResponse(
             data={"aiMarketingActions": actions}
         )
@@ -476,7 +509,8 @@ async def generate_promotion_video(
 
     if image is not None:
         image_bytes = await image.read()
-        image_path = promotion_video_service.save_upload(
+        image_path = await asyncio.to_thread(
+            promotion_video_service.save_upload,
             image.filename or "promotion.jpg",
             image_bytes,
         )
@@ -502,12 +536,14 @@ async def preview_promotion_prompt(
     image_path = None
     if image is not None:
         image_bytes = await image.read()
-        image_path = promotion_video_service.save_upload(
+        image_path = await asyncio.to_thread(
+            promotion_video_service.save_upload,
             image.filename or "promotion-preview.jpg",
             image_bytes,
         )
 
-    plan = promotion_video_service.prompt_service.build_prompt_plan(
+    plan = await asyncio.to_thread(
+        promotion_video_service.prompt_service.build_prompt_plan,
         target=target,
         concept=concept,
         style=style,
@@ -533,7 +569,8 @@ async def recommend_promotion_prompt(
     image_path = None
     if image is not None:
         image_bytes = await image.read()
-        image_path = promotion_video_service.save_upload(
+        image_path = await asyncio.to_thread(
+            promotion_video_service.save_upload,
             image.filename or "promotion-recommendation.jpg",
             image_bytes,
         )
@@ -543,7 +580,8 @@ async def recommend_promotion_prompt(
     except json.JSONDecodeError:
         persona_tags = []
 
-    recommended_prompt = promotion_video_service.prompt_service.recommend_concept_prompt(
+    recommended_prompt = await asyncio.to_thread(
+        promotion_video_service.prompt_service.recommend_concept_prompt,
         target=target,
         style=style,
         mode=mode,
