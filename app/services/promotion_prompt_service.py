@@ -1,3 +1,4 @@
+import base64
 import json
 import mimetypes
 import os
@@ -6,8 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+from openai import OpenAI
 from pydantic import BaseModel, Field
 
 from app.utils.logger import get_logger
@@ -235,9 +235,11 @@ class PromotionPromptService:
             self.assets_dir / "reference_blueprints.json"
         ).get("reference_videos", [])
 
+        # GEMINI_API_KEY는 선택 사항인 DSPy 최적화 경로에서만 사용한다.
         self.api_key = os.getenv("GEMINI_API_KEY")
-        self.client = genai.Client(api_key=self.api_key) if self.api_key else None
-        self.model_name = os.getenv("PROMOTION_GEMINI_MODEL", "gemini-2.5-flash")
+        self.provider, self.client, self.model_name = self._build_text_client()
+        self.vision_client, self.vision_model = self._build_vision_client()
+        self.request_timeout = float(os.getenv("PROMOTION_PROMPT_TIMEOUT_SECONDS", "60"))
         self.dspy_model_name = os.getenv(
             "PROMOTION_DSPY_MODEL",
             "gemini/gemini-2.5-flash",
@@ -251,8 +253,62 @@ class PromotionPromptService:
 
         if not self.client:
             logger.warning(
-                "[PromotionPromptService] GEMINI_API_KEY is missing. Falling back to deterministic prompts."
+                "[PromotionPromptService] No prompt LLM key is configured "
+                "(DEEPSEEK_API_KEY or OPENAI_API_KEY). Falling back to deterministic prompts."
             )
+        if not self.vision_client:
+            logger.info(
+                "[PromotionPromptService] OPENAI_API_KEY is missing, so uploaded images are not analyzed."
+            )
+
+    @staticmethod
+    def _build_text_client() -> tuple[str | None, OpenAI | None, str]:
+        """프롬프트 기획용 LLM. 프로젝트 기본 LLM인 DeepSeek을 우선 쓰고, 없으면 OpenAI를 쓴다."""
+        deepseek_key = os.getenv("DEEPSEEK_API_KEY")
+        openai_key = os.getenv("OPENAI_API_KEY")
+        provider = (os.getenv("PROMOTION_PROMPT_PROVIDER") or "").strip().lower()
+        if not provider:
+            provider = "deepseek" if deepseek_key else "openai"
+
+        if provider == "deepseek" and deepseek_key:
+            # 화면에서 옵션을 바꿀 때마다 호출되므로 thinking을 끈 가벼운 모델을 기본값으로 둔다.
+            model = os.getenv("PROMOTION_PROMPT_MODEL") or "deepseek-flash"
+            base_url = os.getenv("DEEPSEEK_BASE_URL") or "https://api.deepseek.com"
+            return "deepseek", OpenAI(api_key=deepseek_key, base_url=base_url), model
+        if openai_key:
+            model = os.getenv("PROMOTION_PROMPT_MODEL") or os.getenv("OPENAI_MODEL") or "gpt-5-mini"
+            return "openai", OpenAI(api_key=openai_key, base_url=os.getenv("OPENAI_BASE_URL") or None), model
+        return None, None, ""
+
+    @staticmethod
+    def _build_vision_client() -> tuple[OpenAI | None, str]:
+        """업로드 사진 분석용. DeepSeek은 이미지 입력을 받지 않으므로 OpenAI를 사용한다."""
+        openai_key = os.getenv("OPENAI_API_KEY")
+        if not openai_key:
+            return None, ""
+        model = os.getenv("PROMOTION_VISION_MODEL") or os.getenv("OPENAI_MODEL") or "gpt-5-mini"
+        return OpenAI(api_key=openai_key, base_url=os.getenv("OPENAI_BASE_URL") or None), model
+
+    def _complete_json(self, *, system: str, user: str, temperature: float) -> str:
+        params: dict[str, Any] = {
+            "model": self.model_name,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "response_format": {"type": "json_object"},
+            "timeout": self.request_timeout,
+        }
+        if self.provider == "deepseek":
+            params["extra_body"] = {"thinking": {"type": "disabled"}}
+        if self.model_name.startswith("gpt-5"):
+            # GPT-5 계열은 temperature를 받지 않는다.
+            params["reasoning_effort"] = "low"
+        else:
+            params["temperature"] = temperature
+
+        response = self.client.chat.completions.create(**params)
+        return response.choices[0].message.content or ""
 
     @staticmethod
     def _load_json(path: Path) -> dict[str, Any]:
@@ -296,7 +352,7 @@ class PromotionPromptService:
         return ""
 
     def _extract_image_context(self, image_path: str | None) -> str:
-        if not image_path or not self.client:
+        if not image_path or not self.vision_client:
             return "No reference image analysis available."
 
         image_file = Path(image_path)
@@ -307,25 +363,36 @@ class PromotionPromptService:
             with image_file.open("rb") as file:
                 image_bytes = file.read()
 
-            image_part = types.Part.from_bytes(
-                data=image_bytes,
-                mime_type=self._guess_mime_type(image_path),
+            image_url = (
+                f"data:{self._guess_mime_type(image_path)};base64,"
+                f"{base64.b64encode(image_bytes).decode('ascii')}"
             )
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=[
-                    (
-                        "Analyze this food photo for a short SNS ad. Return a compact description of "
-                        "plating, lighting, texture, steam, sauce, dominant colors, and the strongest appetizing cues."
-                    ),
-                    image_part,
+            params: dict[str, Any] = {
+                "model": self.vision_model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    "Analyze this food photo for a short SNS ad. Return a compact description "
+                                    "(under 80 words) of the dish, plating, lighting, texture, steam, sauce, "
+                                    "dominant colors, and the strongest appetizing cues."
+                                ),
+                            },
+                            {"type": "image_url", "image_url": {"url": image_url}},
+                        ],
+                    }
                 ],
-                config=types.GenerateContentConfig(
-                    temperature=0.2,
-                    max_output_tokens=300,
-                ),
-            )
-            return (response.text or "").strip() or "Image analysis was empty."
+                "timeout": self.request_timeout,
+            }
+            if self.vision_model.startswith("gpt-5"):
+                params["reasoning_effort"] = "low"
+            else:
+                params["temperature"] = 0.2
+            response = self.vision_client.chat.completions.create(**params)
+            return (response.choices[0].message.content or "").strip() or "Image analysis was empty."
         except Exception as exc:
             logger.warning("[PromotionPromptService] Image analysis failed: %s", exc)
             return "Image analysis unavailable."
@@ -465,19 +532,16 @@ Rules:
 - Reflect the requested style tone.
 - Keep the focus on realistic restaurant promotion scenes.
 - Do not invent discounts, events, or menu items that were not provided.
+- Do not ask for subtitles, captions, or on-screen text.
 """.strip()
 
         try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.6,
-                    response_mime_type="application/json",
-                    response_schema=PromotionConceptRecommendation,
-                ),
+            raw = self._complete_json(
+                system='Return only a JSON object shaped like {"recommended_prompt": "..."}.',
+                user=prompt,
+                temperature=0.6,
             )
-            recommendation = PromotionConceptRecommendation.model_validate_json(response.text or "{}")
+            recommendation = PromotionConceptRecommendation.model_validate_json(raw or "{}")
             text = (recommendation.recommended_prompt or "").strip()
             return text or fallback_prompt
         except Exception as exc:
@@ -542,7 +606,7 @@ Rules:
             ],
         )
 
-    def _build_direct_gemini_plan(
+    def _build_direct_llm_plan(
         self,
         *,
         target: str,
@@ -560,8 +624,7 @@ Rules:
         blueprint = self._get_reference_blueprint(style)
         style_key = self._normalize_style(style)
 
-        contents: list[Any] = [
-            f"""
+        prompt = f"""
 Target persona: {target}
 Concept: {concept}
 Requested style: {style_key}
@@ -583,49 +646,38 @@ Reference blueprint:
 Image context:
 {image_context}
 
-Return a JSON object with:
-- title: catchy Korean short title
-- hashtags: 3 to 5 Korean hashtags
-- metadata: prompt_name, base_style, aspect_ratio, duration, location, camera_setup, optimizer
-- key_elements: short English phrases for Veo
-- negative_prompts: short English phrases to avoid
-- timeline: 3 scene objects with time and action
+Return a JSON object with exactly these keys:
+- title: catchy Korean short title (under 25 characters)
+- hashtags: array of 3 to 5 short Korean hashtags
+- metadata: object with string fields prompt_name, base_style, aspect_ratio, duration, location, camera_setup
+- key_elements: array of short English phrases for the video model
+- negative_prompts: array of short English phrases to avoid
+- timeline: array of 3 objects covering 0 to 8 seconds in total, each with string fields "time" (e.g. "0-2s") and "action" (English scene direction)
 """.strip()
-        ]
-
-        if image_path and Path(image_path).exists():
-            with Path(image_path).open("rb") as file:
-                contents.append(
-                    types.Part.from_bytes(
-                        data=file.read(),
-                        mime_type=self._guess_mime_type(image_path),
-                    )
-                )
 
         try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=(
-                        "You are a Korean SNS ad director and Veo prompt engineer. "
-                        "Return only JSON that matches the requested schema. "
-                        "Keep the video vertical, food-first, visually appetizing, and safe for AI video generation. "
-                        "The menu concept must remain exactly aligned to the provided concept. "
-                        "Do not swap in a different dish from examples or references."
-                    ),
-                    temperature=0.5,
-                    response_mime_type="application/json",
-                    response_schema=PromotionPromptPlan,
+            raw = self._complete_json(
+                system=(
+                    "You are a Korean SNS ad director and AI video prompt engineer. "
+                    "Return only JSON that matches the requested schema. "
+                    "Keep the video vertical, food-first, visually appetizing, and safe for AI video generation. "
+                    "The menu concept must remain exactly aligned to the provided concept. "
+                    "Do not swap in a different dish from examples or references. "
+                    "Mention the concept's Korean menu name verbatim in the title."
                 ),
+                user=prompt,
+                temperature=0.5,
             )
-            plan = PromotionPromptPlan.model_validate_json(response.text or "{}")
-            plan.metadata.optimizer = "gemini-structured"
+            data = json.loads(raw or "{}")
+            # JSON 모드는 스키마를 강제하지 않으므로, 빠진 필수 metadata는 템플릿 값으로 채운다.
+            data["metadata"] = {**fallback.metadata.model_dump(), **(data.get("metadata") or {})}
+            plan = PromotionPromptPlan.model_validate(data)
+            plan.metadata.optimizer = "llm-structured"
             if not self._is_grounded_in_concept(concept, plan):
                 return fallback.model_dump(), "fallback"
-            return plan.model_dump(), "gemini-structured"
+            return plan.model_dump(), "llm-structured"
         except Exception as exc:
-            logger.warning("[PromotionPromptService] Gemini prompt generation failed: %s", exc)
+            logger.warning("[PromotionPromptService] LLM prompt generation failed: %s", exc)
             return None, None
 
     def _plan_from_dict(
@@ -702,7 +754,7 @@ Return a JSON object with:
             except Exception as exc:
                 logger.warning("[PromotionPromptService] DSPy output normalization failed: %s", exc)
 
-        gemini_plan, gemini_source = self._build_direct_gemini_plan(
+        llm_plan, llm_source = self._build_direct_llm_plan(
             target=target,
             concept=concept,
             style=style,
@@ -711,15 +763,15 @@ Return a JSON object with:
             image_context=image_context,
             fallback=fallback,
         )
-        if gemini_plan:
+        if llm_plan:
             try:
                 return self._plan_from_dict(
-                    raw_plan=gemini_plan,
+                    raw_plan=llm_plan,
                     concept=concept,
                     fallback=fallback,
-                    optimizer_name=gemini_source or "gemini-structured",
+                    optimizer_name=llm_source or "llm-structured",
                 ).model_dump()
             except Exception as exc:
-                logger.warning("[PromotionPromptService] Gemini output normalization failed: %s", exc)
+                logger.warning("[PromotionPromptService] LLM output normalization failed: %s", exc)
 
         return fallback.model_dump()

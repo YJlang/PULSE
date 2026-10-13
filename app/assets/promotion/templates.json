@@ -2,17 +2,17 @@
   "templates": [
     {
       "id": "energetic",
-      "visual_keywords": "Vibrant cafe reel, appetizing close-up, clean highlights, lively motion, realistic food texture",
+      "visual_keywords": "Vibrant restaurant food reel, appetizing close-up, clean highlights, lively motion, realistic food texture",
       "camera_angle": "Vertical hero close-up with quick push-in transitions",
       "lens_optical_effects": "Macro lens, shallow depth of field, crisp focus",
-      "sns_marketing_hook": "Open with the most appetizing drink foam or bread texture in the first two seconds.",
+      "sns_marketing_hook": "Open with the most appetizing texture of the hero menu item in the first two seconds.",
       "negative_prompt": "text overlay, subtitles, watermark, logo replacement, deformed hands, blurry frame",
-      "food_focus_rule": "Keep the drinks and bakery items as the main subject. Avoid unrelated dishes or people dominating the frame.",
+      "food_focus_rule": "Keep the provided menu item as the main subject. Avoid unrelated dishes or people dominating the frame.",
       "aspect_ratio": "9:16"
     },
     {
       "id": "luxury",
-      "visual_keywords": "Premium cafe commercial, elegant lighting, soft cinematic contrast, refined table styling",
+      "visual_keywords": "Premium restaurant commercial, elegant lighting, soft cinematic contrast, refined table styling",
       "camera_angle": "Slow vertical pan with composed tabletop framing",
       "lens_optical_effects": "Cinematic lens, gentle rack focus, shallow depth of field",
       "sns_marketing_hook": "Start with a polished close-up that feels premium and calm.",
@@ -22,12 +22,12 @@
     },
     {
       "id": "emotional",
-      "visual_keywords": "Warm mood-driven cafe story, cozy daylight, inviting textures, soft sentimental pacing",
+      "visual_keywords": "Warm mood-driven restaurant story, cozy daylight, inviting textures, soft sentimental pacing",
       "camera_angle": "Gentle handheld-inspired motion with intimate tabletop focus",
       "lens_optical_effects": "Natural lens, soft bokeh, warm highlights",
       "sns_marketing_hook": "Open with a comforting food detail that immediately feels warm and personal.",
       "negative_prompt": "text overlay, subtitles, watermark, harsh lighting, distorted food, gloomy color cast",
-      "food_focus_rule": "Keep the cozy story centered on the provided drinks, bread, and cafe atmosphere.",
+      "food_focus_rule": "Keep the cozy story centered on the provided menu item and the restaurant atmosphere.",
       "aspect_ratio": "9:16"
     }
   ]
