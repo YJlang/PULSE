@@ -1,3 +1,4 @@
+import base64
 import mimetypes
 import os
 import time
@@ -5,6 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
+import requests
 from dotenv import load_dotenv
 from google.auth.exceptions import DefaultCredentialsError
 from google import genai
@@ -19,6 +21,11 @@ load_dotenv(BASE_DIR / ".env.local", override=False)
 
 logger = get_logger(__name__)
 
+
+RUNWAY_API_VERSION = "2024-11-06"
+RUNWAY_PROMPT_MAX_LENGTH = 15000
+# base64로 인코딩하면 약 4/3배가 되므로, data URI 한도 5MB에 맞춰 원본 크기를 제한한다.
+RUNWAY_DATA_URI_MAX_BYTES = 3_500_000
 
 FALSEY_ENV_VALUES = {"0", "false", "off", "no"}
 VERTICAL_REEL_ASPECT_RATIO = "9:16"
@@ -87,6 +94,27 @@ class PromotionVideoService:
             "PROMOTION_VEO_VERTEX_FALLBACK_RESOLUTION",
             self.vertex_standard_resolution,
         )
+
+        # Runway API (Seedance 등). RUNWAYML_API_SECRET이 있으면 기본 영상 백엔드로 사용한다.
+        self.runway_api_key = (os.getenv("RUNWAYML_API_SECRET") or "").strip()
+        self.video_provider = (os.getenv("PROMOTION_VIDEO_PROVIDER") or "").strip().lower()
+        if not self.video_provider:
+            self.video_provider = "runway" if self.runway_api_key else "veo"
+        self.runway_base_url = (
+            os.getenv("PROMOTION_RUNWAY_BASE_URL") or "https://api.dev.runwayml.com"
+        ).rstrip("/")
+        self.runway_model = os.getenv("PROMOTION_RUNWAY_MODEL", "seedance2_5")
+        # ratio는 "가로:세로" 픽셀 값이며 해상도까지 함께 결정한다. (1080:1920 = 1080p 세로)
+        self.runway_ratio = os.getenv("PROMOTION_RUNWAY_RATIO", "1080:1920")
+        self.runway_fast_ratio = os.getenv("PROMOTION_RUNWAY_FAST_RATIO", "720:1280")
+        self.runway_duration = int(os.getenv("PROMOTION_RUNWAY_DURATION", "8"))
+        self.runway_audio = (
+            os.getenv("PROMOTION_RUNWAY_AUDIO", "true").strip().lower() not in FALSEY_ENV_VALUES
+        )
+        # reference: 업로드 사진을 참고 이미지로만 사용, first_frame: 영상 첫 프레임으로 고정
+        self.runway_image_mode = os.getenv("PROMOTION_RUNWAY_IMAGE_MODE", "reference").strip().lower()
+        self.runway_poll_interval = float(os.getenv("PROMOTION_RUNWAY_POLL_INTERVAL_SECONDS", "5"))
+        self.runway_timeout = float(os.getenv("PROMOTION_RUNWAY_TIMEOUT_SECONDS", "900"))
 
     @staticmethod
     def _guess_mime_type(filename: str | None) -> str:
@@ -378,6 +406,186 @@ class PromotionVideoService:
 
         raise RuntimeError("Generated video could not be saved locally.")
 
+    def _runway_headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.runway_api_key}",
+            "X-Runway-Version": RUNWAY_API_VERSION,
+        }
+
+    def _runway_ratio_for_mode(self, mode: str) -> str:
+        if (mode or "").strip().lower() == "standard_fast":
+            return self.runway_fast_ratio
+        return self.runway_ratio
+
+    def _runway_image_uri(self, image_path: str | None) -> str | None:
+        if not image_path:
+            return None
+
+        file_path = Path(image_path)
+        if not file_path.exists():
+            return None
+
+        image_bytes = file_path.read_bytes()
+        mime_type = self._guess_mime_type(file_path.name)
+        if len(image_bytes) <= RUNWAY_DATA_URI_MAX_BYTES:
+            encoded = base64.b64encode(image_bytes).decode("ascii")
+            return f"data:{mime_type};base64,{encoded}"
+
+        # data URI 한도(5MB)를 넘는 사진은 Runway 임시 업로드를 거쳐 runway:// URI로 전달한다.
+        response = requests.post(
+            f"{self.runway_base_url}/v1/uploads",
+            headers=self._runway_headers(),
+            json={"filename": file_path.name, "type": "ephemeral"},
+            timeout=30,
+        )
+        self._raise_for_runway_error(response)
+        upload = response.json()
+        upload_response = requests.post(
+            upload["uploadUrl"],
+            data=upload.get("fields") or {},
+            files={"file": (file_path.name, image_bytes, mime_type)},
+            timeout=120,
+        )
+        upload_response.raise_for_status()
+        return upload["runwayUri"]
+
+    def _build_runway_request(
+        self,
+        *,
+        prompt: str,
+        mode: str,
+        image_uri: str | None,
+    ) -> tuple[str, dict[str, Any]]:
+        payload: dict[str, Any] = {
+            "model": self.runway_model,
+            "promptText": prompt[:RUNWAY_PROMPT_MAX_LENGTH],
+            "ratio": self._runway_ratio_for_mode(mode),
+            "duration": self.runway_duration,
+            "audio": self.runway_audio,
+        }
+        if not image_uri:
+            return "/v1/text_to_video", payload
+
+        image: dict[str, str] = {"uri": image_uri}
+        if self.runway_image_mode == "first_frame":
+            image["position"] = "first"
+        payload["promptImage"] = [image]
+        return "/v1/image_to_video", payload
+
+    @staticmethod
+    def _raise_for_runway_error(response: requests.Response) -> None:
+        if response.ok:
+            return
+
+        try:
+            detail = response.json().get("error") or response.text
+        except ValueError:
+            detail = response.text
+
+        if response.status_code == 401:
+            raise RuntimeError("Runway API 키가 올바르지 않습니다. RUNWAYML_API_SECRET 값을 확인하세요.")
+        if response.status_code == 429:
+            raise RuntimeError(f"Runway 요청 한도를 초과했습니다. 잠시 후 다시 시도하세요. {detail}")
+        if response.status_code == 400 and "credit" in str(detail).lower():
+            raise RuntimeError(f"Runway 크레딧이 부족합니다. {detail}")
+        raise RuntimeError(f"Runway API 요청이 실패했습니다. ({response.status_code}) {detail}")
+
+    def _wait_for_runway_task(self, task_id: str, notify: Callable[[int, str], None]) -> dict[str, Any]:
+        deadline = time.monotonic() + self.runway_timeout
+        while time.monotonic() < deadline:
+            response = requests.get(
+                f"{self.runway_base_url}/v1/tasks/{task_id}",
+                headers=self._runway_headers(),
+                timeout=30,
+            )
+            self._raise_for_runway_error(response)
+            task = response.json()
+            status = task.get("status")
+
+            if status == "SUCCEEDED":
+                return task
+            if status in {"FAILED", "CANCELLED"}:
+                raise RuntimeError(
+                    "Runway 영상 생성이 실패했습니다. "
+                    f"{task.get('failureCode') or status}: {task.get('failure') or ''}".strip()
+                )
+
+            progress = float(task.get("progress") or 0)
+            notify(55 + int(progress * 35), "Runway가 영상을 생성하는 중입니다.")
+            time.sleep(self.runway_poll_interval)
+
+        raise RuntimeError(f"Runway 영상 생성이 {int(self.runway_timeout)}초 안에 끝나지 않았습니다. (task {task_id})")
+
+    def _download_runway_video(self, url: str) -> str:
+        local_path = self.videos_dir / f"{uuid.uuid4().hex}.mp4"
+        with requests.get(url, stream=True, timeout=300) as response:
+            response.raise_for_status()
+            with local_path.open("wb") as file:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    file.write(chunk)
+        return f"/static/promotion/videos/{local_path.name}"
+
+    def _generate_with_runway(
+        self,
+        *,
+        plan: dict[str, Any],
+        prompt: str,
+        concept: str,
+        mode: str,
+        image_path: str | None,
+        notify: Callable[[int, str], None],
+        started_at: float,
+    ) -> dict[str, Any]:
+        if not self.runway_api_key:
+            raise RuntimeError(
+                "Runway API 키가 설정되지 않았습니다. pulse_python/.env에 RUNWAYML_API_SECRET을 넣어 주세요."
+            )
+
+        endpoint, payload = self._build_runway_request(
+            prompt=prompt,
+            mode=mode,
+            image_uri=self._runway_image_uri(image_path),
+        )
+        notify(45, f"영상 생성 모델(runway:{payload['model']}, {payload['ratio']})에 요청하는 중입니다.")
+
+        response = requests.post(
+            f"{self.runway_base_url}{endpoint}",
+            headers=self._runway_headers(),
+            json=payload,
+            timeout=60,
+        )
+        self._raise_for_runway_error(response)
+        created = response.json()
+        task_id = created["id"]
+        logger.info(
+            "[PromotionVideoService] Runway task %s created (model=%s, ratio=%s, duration=%ss, estimated credits=%s)",
+            task_id,
+            payload["model"],
+            payload["ratio"],
+            payload["duration"],
+            (created.get("estimatedCost") or {}).get("credits"),
+        )
+
+        task = self._wait_for_runway_task(task_id, notify)
+        outputs = task.get("output") or []
+        if not outputs:
+            raise RuntimeError("Runway 영상 생성이 결과물 없이 끝났습니다.")
+
+        # Runway 결과 URL은 24~48시간 뒤 만료되므로 로컬에 저장해 제공한다.
+        video_url = self._download_runway_video(outputs[0])
+        elapsed = time.monotonic() - started_at
+        notify(100, "홍보영상 생성이 완료되었습니다.")
+        return {
+            "videoUrl": video_url,
+            "videoTitle": plan.get("title") or f"{concept} 홍보영상",
+            "hashtags": plan.get("hashtags") or ["#홍보영상", "#맛집"],
+            "generationTime": f"{elapsed:.1f}s",
+            "promptPlan": plan,
+            "model": payload["model"],
+            "resolution": payload["ratio"],
+            "credits": (task.get("cost") or {}).get("credits"),
+        }
+
     def generate_video(
         self,
         *,
@@ -400,6 +608,18 @@ class PromotionVideoService:
             image_path=image_path,
         )
         prompt = self._build_prompt_text(plan)
+
+        if self.video_provider == "runway":
+            return self._generate_with_runway(
+                plan=plan,
+                prompt=prompt,
+                concept=concept,
+                mode=mode,
+                image_path=image_path,
+                notify=notify,
+                started_at=started_at,
+            )
+
         uploaded_reference_images = self._build_reference_images(image_path)
         reference_images = self._reference_images_for_generation(uploaded_reference_images)
         optimizer_name = (plan.get("metadata") or {}).get("optimizer")
